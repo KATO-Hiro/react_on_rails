@@ -1,0 +1,23 @@
+Description:
+
+The react_on_rails:install generator integrates a React frontend, including SSR, with Rails.
+
+* Redux (Optional)
+
+    Passing the --redux generator option causes the generated Hello World example
+    to integrate the Redux state container framework. The necessary node modules
+    will be automatically included for you.
+
+*******************************************************************************
+
+After running the generator, you will want to:
+
+    bundle && npm install     # or yarn install, or pnpm install
+
+Then you may run
+
+    ./bin/dev
+
+More Details:
+
+    `https://github.com/shakacode/react_on_rails/blob/master/docs/additional-details/generator-details.md`

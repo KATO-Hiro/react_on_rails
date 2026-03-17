@@ -1,0 +1,154 @@
+name: Rspec test for gem
+
+on:
+  push:
+    branches:
+      - 'master'
+    # Always trigger on master; docs-only detection handles skipping heavy jobs
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'packages/**'
+      - 'react_on_rails_pro/**'
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Force run all jobs (bypass detect-changes)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  detect-changes:
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-22.04
+    outputs:
+      docs_only: ${{ steps.detect.outputs.docs_only }}
+      run_lint: ${{ steps.detect.outputs.run_lint }}
+      run_js_tests: ${{ steps.detect.outputs.run_js_tests }}
+      run_ruby_tests: ${{ steps.detect.outputs.run_ruby_tests }}
+      run_dummy_tests: ${{ steps.detect.outputs.run_dummy_tests }}
+      run_generators: ${{ steps.detect.outputs.run_generators }}
+      has_full_ci_label: ${{ steps.check-label.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch enough history for change detection (50 commits is usually sufficient for PRs)
+          fetch-depth: 50
+          persist-credentials: false
+      - name: Check for full-ci label
+        id: check-label
+        uses: ./.github/actions/check-full-ci-label
+      - name: Detect relevant changes
+        id: detect
+        run: |
+          # If force_run is true OR full-ci label is present, run everything
+          if [ "${{ inputs.force_run }}" = "true" ] || [ "${{ steps.check-label.outputs.result }}" = "true" ]; then
+            echo "run_lint=true" >> "$GITHUB_OUTPUT"
+            echo "run_js_tests=true" >> "$GITHUB_OUTPUT"
+            echo "run_ruby_tests=true" >> "$GITHUB_OUTPUT"
+            echo "run_dummy_tests=true" >> "$GITHUB_OUTPUT"
+            echo "run_generators=true" >> "$GITHUB_OUTPUT"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BASE_REF="${{ github.event.pull_request.base.sha || github.event.before || 'origin/master' }}"
+          script/ci-changes-detector "$BASE_REF"
+        shell: bash
+      - name: Guard docs-only master pushes
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: ./.github/actions/ensure-master-docs-safety
+        with:
+          docs-only: ${{ steps.detect.outputs.docs_only }}
+          previous-sha: ${{ github.event.before }}
+
+  setup-gem-tests-matrix:
+    needs: detect-changes
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          # Determine if we should run full matrix (master or full-ci label)
+          if [[ "${{ github.ref }}" == "refs/heads/master" ]] || \
+             [[ "${{ needs.detect-changes.outputs.has_full_ci_label }}" == "true" ]]; then
+            # Full matrix: test both latest and minimum supported versions
+            echo 'matrix={"include":[{"ruby-version":"3.4","dependency-level":"latest"},{"ruby-version":"3.2","dependency-level":"minimum"}]}' >> $GITHUB_OUTPUT
+          else
+            # PR matrix: test only latest versions for fast feedback
+            echo 'matrix={"include":[{"ruby-version":"3.4","dependency-level":"latest"}]}' >> $GITHUB_OUTPUT
+          fi
+
+  rspec-package-tests:
+    needs: [detect-changes, setup-gem-tests-matrix]
+    # Skip only if: master push AND docs-only changes
+    # Otherwise run if: on master OR Ruby tests needed
+    # This allows docs-only commits to skip heavy jobs while ensuring full CI on master for code changes
+    if: |
+      !(
+        github.event_name == 'push' &&
+        github.ref == 'refs/heads/master' &&
+        needs.detect-changes.outputs.docs_only == 'true'
+      ) && (
+        github.ref == 'refs/heads/master' ||
+        needs.detect-changes.outputs.run_ruby_tests == 'true'
+      )
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup-gem-tests-matrix.outputs.matrix) }}
+    env:
+      BUNDLE_FROZEN: ${{ matrix.dependency-level == 'minimum' && 'false' || 'true' }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby-version }}
+          bundler: 2.5.9
+      - name: Print system information
+        run: |
+          echo "Linux release: "; cat /etc/issue
+          echo "Current user: "; whoami
+          echo "Current directory: "; pwd
+          echo "Ruby version: "; ruby -v
+          echo "Node version: "; node -v
+          echo "Bundler version: "; bundle --version
+      - name: run conversion script to use minimum supported dependency versions
+        if: matrix.dependency-level == 'minimum'
+        run: script/convert
+      - name: Save root ruby gems to cache
+        uses: actions/cache@v4
+        with:
+          path: react_on_rails/vendor/bundle
+          key: package-app-gem-cache-${{ hashFiles('react_on_rails/Gemfile.lock') }}-${{ matrix.ruby-version }}-${{ matrix.dependency-level }}
+      - name: Install Ruby Gems for package
+        run: cd react_on_rails && (bundle check --path=vendor/bundle || bundle  _2.5.9_ install --path=vendor/bundle --jobs=4 --retry=3)
+      - name: Git Stuff
+        if: matrix.dependency-level == 'minimum'
+        run: |
+          git config user.email "you@example.com"
+          git config user.name "Your Name"
+          git commit -am "stop generators from complaining about uncommitted code"
+      - name: Set dependency level environment variable
+        run: |
+          echo "CI_DEPENDENCY_LEVEL=${{ matrix.dependency-level }}" >> $GITHUB_ENV
+      - name: Run rspec tests
+        run: cd react_on_rails && bundle exec rspec spec/react_on_rails
+      - name: Store test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-rspec-${{ github.run_id }}-${{ github.job }}-ruby${{ matrix.ruby-version }}-${{ matrix.dependency-level }}
+          path: ~/rspec
+      - name: Store artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-test-log-${{ github.run_id }}-${{ github.job }}-ruby${{ matrix.ruby-version }}-${{ matrix.dependency-level }}
+          path: log/test.log

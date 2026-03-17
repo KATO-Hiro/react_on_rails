@@ -1,0 +1,73 @@
+{
+  "name": "react-on-rails",
+  "version": "16.4.0",
+  "description": "react-on-rails JavaScript for react_on_rails Ruby gem",
+  "main": "lib/ReactOnRails.full.js",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm run clean && tsc",
+    "build-watch": "pnpm run clean && tsc --watch",
+    "clean": "rm -rf ./lib",
+    "test": "jest tests",
+    "type-check": "tsc --noEmit --noErrorTruncation",
+    "prepare": "[ -f lib/ReactOnRails.full.js ] || (rm -rf ./lib && tsc)",
+    "prepublishOnly": "pnpm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shakacode/react_on_rails.git"
+  },
+  "keywords": [
+    "react",
+    "webpack",
+    "JavaScript",
+    "Ruby",
+    "on",
+    "Rails"
+  ],
+  "author": "justin@shakacode.com",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "exports": {
+    ".": {
+      "default": "./lib/ReactOnRails.full.js"
+    },
+    "./client": "./lib/ReactOnRails.client.js",
+    "./types": "./lib/types/index.js",
+    "./context": "./lib/context.js",
+    "./pageLifecycle": "./lib/pageLifecycle.js",
+    "./createReactOutput": "./lib/createReactOutput.js",
+    "./isServerRenderResult": "./lib/isServerRenderResult.js",
+    "./reactApis": "./lib/reactApis.cjs",
+    "./reactHydrateOrRender": "./lib/reactHydrateOrRender.js",
+    "./turbolinksUtils": "./lib/turbolinksUtils.js",
+    "./isRenderFunction": "./lib/isRenderFunction.js",
+    "./ReactOnRails.client": "./lib/ReactOnRails.client.js",
+    "./ReactOnRails.full": "./lib/ReactOnRails.full.js",
+    "./handleError": "./lib/handleError.js",
+    "./generateRenderingErrorMessage": "./lib/generateRenderingErrorMessage.js",
+    "./serverRenderUtils": "./lib/serverRenderUtils.js",
+    "./buildConsoleReplay": "./lib/buildConsoleReplay.js",
+    "./ReactDOMServer": "./lib/ReactDOMServer.cjs",
+    "./serverRenderReactComponent": "./lib/serverRenderReactComponent.js",
+    "./@internal/base/client": "./lib/base/client.js",
+    "./@internal/base/full": {
+      "react-server": "./lib/base/full.rsc.js",
+      "default": "./lib/base/full.js"
+    }
+  },
+  "peerDependencies": {
+    "react": ">= 16",
+    "react-dom": ">= 16"
+  },
+  "files": [
+    "README.md",
+    "lib/**/*.js",
+    "lib/**/*.cjs",
+    "lib/**/*.mjs",
+    "lib/**/*.d.ts"
+  ],
+  "bugs": {
+    "url": "https://github.com/shakacode/react_on_rails/issues"
+  },
+  "homepage": "https://github.com/shakacode/react_on_rails#readme"
+}

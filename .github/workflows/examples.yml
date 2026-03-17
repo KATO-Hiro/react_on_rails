@@ -1,0 +1,202 @@
+name: Generator tests # TODO needs to be duplicated for RoR Pro
+
+on:
+  push:
+    branches:
+      - 'master'
+    # Always trigger on master; docs-only detection handles skipping heavy jobs
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Force run all jobs (bypass detect-changes)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  detect-changes:
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-22.04
+    outputs:
+      docs_only: ${{ steps.detect.outputs.docs_only }}
+      run_lint: ${{ steps.detect.outputs.run_lint }}
+      run_js_tests: ${{ steps.detect.outputs.run_js_tests }}
+      run_ruby_tests: ${{ steps.detect.outputs.run_ruby_tests }}
+      run_dummy_tests: ${{ steps.detect.outputs.run_dummy_tests }}
+      run_generators: ${{ steps.detect.outputs.run_generators }}
+      has_full_ci_label: ${{ steps.check-label.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch enough history for change detection (50 commits is usually sufficient for PRs)
+          fetch-depth: 50
+          persist-credentials: false
+      - name: Check for full-ci label
+        id: check-label
+        uses: ./.github/actions/check-full-ci-label
+      - name: Detect relevant changes
+        id: detect
+        run: |
+          # If force_run is true OR full-ci label is present, run everything
+          if [ "${{ inputs.force_run }}" = "true" ] || [ "${{ steps.check-label.outputs.result }}" = "true" ]; then
+            echo "run_lint=true" >> "$GITHUB_OUTPUT"
+            echo "run_js_tests=true" >> "$GITHUB_OUTPUT"
+            echo "run_ruby_tests=true" >> "$GITHUB_OUTPUT"
+            echo "run_dummy_tests=true" >> "$GITHUB_OUTPUT"
+            echo "run_generators=true" >> "$GITHUB_OUTPUT"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BASE_REF="${{ github.event.pull_request.base.sha || github.event.before || 'origin/master' }}"
+          script/ci-changes-detector "$BASE_REF"
+        shell: bash
+      - name: Guard docs-only master pushes
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: ./.github/actions/ensure-master-docs-safety
+        with:
+          docs-only: ${{ steps.detect.outputs.docs_only }}
+          previous-sha: ${{ github.event.before }}
+
+  setup-matrix:
+    needs: detect-changes
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          # Determine if we should run full matrix (master, workflow_dispatch, force_run, or full-ci label)
+          if [[ "${{ github.ref }}" == "refs/heads/master" ]] || \
+             [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || \
+             [[ "${{ inputs.force_run }}" == "true" ]] || \
+             [[ "${{ needs.detect-changes.outputs.has_full_ci_label }}" == "true" ]]; then
+            # Full matrix: test both latest and minimum supported versions
+            echo 'matrix={"include":[{"ruby-version":"3.4","dependency-level":"latest"},{"ruby-version":"3.2","dependency-level":"minimum"}]}' >> $GITHUB_OUTPUT
+          else
+            # PR matrix: test only latest versions for fast feedback
+            echo 'matrix={"include":[{"ruby-version":"3.4","dependency-level":"latest"}]}' >> $GITHUB_OUTPUT
+          fi
+
+  examples:
+    needs: [detect-changes, setup-matrix]
+    # Run on master, workflow_dispatch, OR when generators needed
+    if: |
+      !(
+        github.event_name == 'push' &&
+        github.ref == 'refs/heads/master' &&
+        needs.detect-changes.outputs.docs_only == 'true'
+      ) && (
+        github.ref == 'refs/heads/master' ||
+        github.event_name == 'workflow_dispatch' ||
+        needs.detect-changes.outputs.run_generators == 'true'
+      )
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup-matrix.outputs.matrix) }}
+    env:
+      BUNDLE_FROZEN: ${{ matrix.dependency-level == 'minimum' && 'false' || 'true' }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby-version }}
+          bundler: 2.5.9
+      - name: Setup Node
+        uses: ./.github/actions/setup-node-with-retry
+        with:
+          node-version: 20
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Get pnpm store directory
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+      - name: Print system information
+        run: |
+          echo "Linux release: "; cat /etc/issue
+          echo "Current user: "; whoami
+          echo "Current directory: "; pwd
+          echo "Ruby version: "; ruby -v
+          echo "Node version: "; node -v
+          echo "pnpm version: "; pnpm --version
+          echo "Bundler version: "; bundle --version
+      - name: Run conversion script for older Node compatibility
+        if: matrix.dependency-level == 'minimum'
+        run: script/convert
+      - name: Save root ruby gems to cache
+        uses: actions/cache@v4
+        with:
+          path: react_on_rails/vendor/bundle
+          key: package-app-gem-cache-${{ hashFiles('react_on_rails/Gemfile.lock') }}-ruby${{ matrix.ruby-version }}-${{ matrix.dependency-level }}
+      - id: get-sha
+        run: echo "sha=\"$(git rev-parse HEAD)\"" >> "$GITHUB_OUTPUT"
+      - name: Install Node modules with pnpm
+        run: pnpm install ${{ matrix.dependency-level == 'latest' && '--frozen-lockfile' || '--no-frozen-lockfile' }}
+
+      - name: Build workspace packages
+        run: pnpm run build
+
+      - name: Install Ruby Gems for package
+        run: |
+          cd react_on_rails
+          bundle lock --add-platform 'x86_64-linux'
+          if ! bundle check --path=vendor/bundle; then
+            bundle _2.5.9_ install --path=vendor/bundle --jobs=4 --retry=3
+          fi
+      - name: Ensure minimum required Chrome version
+        run: |
+          echo -e "Already installed $(google-chrome --version)\n"
+          MINIMUM_REQUIRED_CHROME_VERSION=75
+          INSTALLED_CHROME_MAJOR_VERSION="$(google-chrome --version | tr ' .' '\t' | cut -f3)"
+          if [[ $INSTALLED_CHROME_MAJOR_VERSION -lt $MINIMUM_REQUIRED_CHROME_VERSION ]]; then
+            wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+            sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+            sudo apt-get update
+            sudo apt-get install google-chrome-stable
+            echo -e "\nInstalled $(google-chrome --version)"
+          fi
+      - name: Increase the amount of inotify watchers
+        run: echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p
+      - name: Set packer version environment variable
+        run: |
+          echo "CI_DEPENDENCY_LEVEL=${{ matrix.dependency-level }}" >> $GITHUB_ENV
+      - name: Verify rake tasks exist
+        run: |
+          cd react_on_rails
+          echo "Available shakapacker_examples tasks:"
+          bundle exec rake -T | grep shakapacker_examples || true
+          # Verify the specific task we need exists
+          TASK_NAME="run_rspec:shakapacker_examples_${{ matrix.dependency-level == 'latest' && 'latest' || 'pinned' }}"
+          if ! bundle exec rake -T | grep -q "$TASK_NAME"; then
+            echo "ERROR: Required rake task '$TASK_NAME' not found!"
+            exit 1
+          fi
+          echo "✓ Found required task: $TASK_NAME"
+      - name: Main CI - Latest version examples
+        if: matrix.dependency-level == 'latest'
+        run: cd react_on_rails && bundle exec rake run_rspec:shakapacker_examples_latest
+      - name: "Main CI - Pinned version examples (React 16, 17, 18)"
+        if: matrix.dependency-level == 'minimum'
+        run: cd react_on_rails && bundle exec rake run_rspec:shakapacker_examples_pinned
+      - name: Store test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-rspec-${{ github.run_id }}-${{ github.job }}-ruby${{ matrix.ruby-version }}-${{ matrix.dependency-level }}
+          path: ~/rspec

@@ -1,25 +1,31 @@
 # frozen_string_literal: true
 
-# Rake will automatically load any *.rake files inside of the "rakelib" folder
-# See rakelib/
+# Root Rakefile for monorepo development
+#
+# This file enables running rake tasks from the monorepo root directory.
+# It loads:
+#   1. Monorepo-level tasks from ./rakelib/ (e.g., release task for both gems)
+#   2. The react_on_rails gem's Rakefile
+#   3. The react_on_rails gem's rakelib tasks
+#
+# Usage: bundle exec rake -T (from monorepo root)
+#
+# Note: This is for development only. When the gem is installed in a Rails app,
+# Rails::Engine handles rake task loading automatically from lib/tasks/.
 
-tasks = %w[lint run_rspec]
-prepare_for_ci = %w[node_package dummy_apps]
-
-if ENV["USE_COVERALLS"] == "TRUE"
-  require "coveralls/rake/task"
-  Coveralls::RakeTask.new
-  tasks << "coveralls:push"
+# Define gem_root helper for use by rake tasks
+def gem_root
+  File.expand_path("react_on_rails", __dir__)
 end
 
-desc "Run all tests and linting"
-task default: tasks
+# Load the open-source gem's Rakefile
+load File.expand_path("Rakefile", gem_root)
 
-desc "All actions but no examples, good for local developer run."
-task all_but_examples: ["run_rspec:all_but_examples", "lint"]
+# Load all rake tasks from the gem's rakelib directory
+# Rake only auto-loads from ./rakelib in the current working directory,
+# so we must explicitly load from the subdirectory.
+Dir[File.join(gem_root, "rakelib", "*.rake")].each { |rake_file| load rake_file }
 
-desc "Prepare for ci, including node_package, dummy app, and generator examples"
-task prepare_for_ci: prepare_for_ci
-
-desc "Runs prepare_for_ci and tasks"
-task ci: [:prepare_for_ci, *tasks]
+# NOTE: Monorepo-level rake tasks from ./rakelib/ are auto-loaded by Rake.
+# Do NOT explicitly load them here, as that would cause tasks to be defined twice
+# and their bodies would run twice (Rake appends duplicate task definitions).

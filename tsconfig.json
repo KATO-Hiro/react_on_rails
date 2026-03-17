@@ -1,14 +1,20 @@
 {
+  "extends": "@tsconfig/node14",
   "compilerOptions": {
     "allowJs": true,
-    "esModuleInterop": true,
-    "jsx": "react",
-    "lib": ["dom", "es2015"],
-    "module": "CommonJS",
+    "esModuleInterop": false,
+    "declaration": true,
+    "declarationMap": true,
+    // needed for Jest tests even though we don't use .tsx
+    "jsx": "react-jsx",
+    "lib": ["dom", "es2020"],
     "noImplicitAny": true,
-    "outDir": "node_package/lib",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
     "strict": true,
-    "target": "es5"
-  },
-  "include": ["node_package/src/**/*"]
+    "sourceMap": true,
+    "incremental": true,
+    "target": "es2020",
+    "typeRoots": ["./node_modules/@types"]
+  }
 }

@@ -1,0 +1,104 @@
+name: Playwright E2E Tests
+
+on:
+  push:
+    branches: [master]
+    # Always trigger on master; docs-only detection handles skipping heavy jobs
+  workflow_dispatch:
+
+jobs:
+  detect-changes:
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-22.04
+    outputs:
+      docs_only: ${{ steps.detect.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Detect relevant changes
+        id: detect
+        run: |
+          BASE_REF="${{ github.event.before || 'origin/master' }}"
+          script/ci-changes-detector "$BASE_REF"
+        shell: bash
+      - name: Guard docs-only master pushes
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: ./.github/actions/ensure-master-docs-safety
+        with:
+          docs-only: ${{ steps.detect.outputs.docs_only }}
+          previous-sha: ${{ github.event.before }}
+
+  playwright:
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' || !(
+        github.event_name == 'push' &&
+        github.ref == 'refs/heads/master' &&
+        needs.detect-changes.outputs.docs_only == 'true'
+      )
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - uses: ./.github/actions/setup-node-with-retry
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build workspace packages
+        run: pnpm run build
+
+      - name: Install dummy app Ruby dependencies
+        working-directory: react_on_rails/spec/dummy
+        run: bundle install
+
+      - name: Install Playwright browsers
+        working-directory: react_on_rails/spec/dummy
+        run: npx playwright install --with-deps
+
+      - name: Generate React on Rails packs
+        working-directory: react_on_rails/spec/dummy
+        env:
+          RAILS_ENV: test
+        run: bundle exec rake react_on_rails:generate_packs
+
+      - name: Build test assets
+        working-directory: react_on_rails/spec/dummy
+        run: pnpm run build:test
+
+      - name: Run Playwright tests
+        working-directory: react_on_rails/spec/dummy
+        run: pnpm run test:e2e
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: react_on_rails/spec/dummy/e2e/playwright-report/
+          retention-days: 30
